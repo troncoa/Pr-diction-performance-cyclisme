@@ -11,6 +11,9 @@ import time
 import gpxpy
 import pandas as pd
 import numpy as np
+import pickle
+import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Générateur d'itinéraire cycliste", layout="wide")
 
@@ -84,12 +87,53 @@ def load_data(df):
         **{
             'annee': df["Activity Date"].str.split(',', expand=True)[1].str.strip().astype(int),
             'mois': df["Activity Date"].str.split(' ', expand=True)[0],
+            'jour': df["Activity Date"].str.split(' ', expand=True)[1].str.replace(',', '').astype(int),
             'elevation_km': (df["Elevation Gain"] / df["Distance_m"]) * 1000,
             'date': pd.to_datetime(df["Activity Date"], format='%b %d, %Y, %I:%M:%S %p')
         }
     )
 
     return df
+
+def get_dist_cum_elev(df, id_parcours):
+
+    R = 6371
+
+    df_dist = pd.DataFrame(df.iloc[0][id_parcours], columns=["lat", "lon"])
+
+    lat = np.radians(df_dist["lat"])
+    lon = np.radians(df_dist["lon"])
+
+    dlat = lat.diff()
+    dlon = lon.diff()
+
+    a = np.sin(dlat/2)**2 + np.cos(lat)*np.cos(lat.shift())*np.sin(dlon/2)**2
+    df_dist["dist"] = 2 * R * np.arcsin(np.sqrt(a))
+
+    df_dist["dist"] = df_dist["dist"].fillna(0)
+    df_dist["dist_cum"] = round(df_dist["dist"].cumsum(),4)
+
+    df_dist["elev"] = df.iloc[1][id_parcours]
+
+    return df_dist[["dist_cum", "elev", "lat", "lon"]]
+
+def carte_folium_parcours(df):
+
+    center_lat = df["lat"].iloc[0]
+    center_lon = df["lon"].iloc[0]
+
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=14)
+
+    coords = list(zip(df["lat"], df["lon"]))
+
+    folium.PolyLine(coords, color="red", weight=3, opacity=0.8).add_to(m)
+
+    folium.Marker(coords[0], tooltip="Départ", icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker(coords[-1], tooltip="Arrivée", icon=folium.Icon(color="red")).add_to(m)
+
+    return m
+
+
 
 # Fonctions pour générer le parcours
 
@@ -125,64 +169,52 @@ def waypoint_from_angle(lat, lon, distance_m, angle):
 
     return math.degrees(lat2), math.degrees(lon2)
 
-def generation_parcours(Point_depart, Distance_souhaitee, nb_noeuds=5, premier_noeud=None):
-
-    start_node = ox.nearest_nodes(G, Point_depart[1], Point_depart[0])
-
-    base_angle = random.uniform(0, 2 * math.pi)
-
-    radius = Distance_souhaitee * 0.55 * 1000 / nb_noeuds
-
-    angles = [
-        base_angle,
-        base_angle + random.uniform(0, math.pi / 3),
-        base_angle + random.uniform(math.pi / 3, 2 * math.pi / 3),
-        base_angle + random.uniform(2 * math.pi / 3, 3 * math.pi / 3),
-        base_angle + random.uniform(3 * math.pi / 3, 4 * math.pi / 3),
-        base_angle + random.uniform(4 * math.pi / 3, 5 * math.pi / 3)
-    ]
-
-    waypoints = []
-
-    current_lat, current_lon = Point_depart
-
-    for a in angles:
-        new_point = waypoint_from_angle(
-            current_lat,
-            current_lon,
-            random.uniform(2 / 3 * radius, 4 / 3 * radius),
-            a
-        )
-        waypoints.append(new_point)
-
-        current_lat, current_lon = new_point
-
-    nodes = [
-        ox.nearest_nodes(G, lon, lat)
-        for lat, lon in waypoints
-    ]
-
-    route = []
-
-    segments = [
-        (start_node, nodes[0]),
-        (nodes[0], nodes[1]),
-        (nodes[1], nodes[2]),
-        (nodes[2], nodes[3]),
-        (nodes[3], nodes[4]),
-        (nodes[4], nodes[5]),
-        (nodes[5], start_node)
-    ]
-
-    for u, v in segments:
-        path = nx.shortest_path(G, u, v, weight="length")
-
-        if route:
-            route.extend(path[1:])
-        else:
-            route.extend(path)
-
-    return route
+def generation_parcours(Point_depart, Distance_souhaitee, nb_noeuds=5, max_attempts=3):
+    for attempt in range(max_attempts):
+        try:
+            start_node = ox.nearest_nodes(G, Point_depart[1], Point_depart[0])
+            base_angle = random.uniform(0, 2 * math.pi)
+            radius = Distance_souhaitee * 0.55 * 1000 / nb_noeuds
+            angles = [
+                base_angle,
+                base_angle + random.uniform(0, math.pi / 3),
+                base_angle + random.uniform(math.pi / 3, 2 * math.pi / 3),
+                base_angle + random.uniform(2 * math.pi / 3, 3 * math.pi / 3),
+                base_angle + random.uniform(3 * math.pi / 3, 4 * math.pi / 3),
+                base_angle + random.uniform(4 * math.pi / 3, 5 * math.pi / 3)
+            ]
+            waypoints = []
+            current_lat, current_lon = Point_depart
+            for a in angles:
+                new_point = waypoint_from_angle(
+                    current_lat,
+                    current_lon,
+                    random.uniform(2 / 3 * radius, 4 / 3 * radius),
+                    a
+                )
+                waypoints.append(new_point)
+                current_lat, current_lon = new_point
+            nodes = [ox.nearest_nodes(G, lon, lat) for lat, lon in waypoints]
+            route = []
+            segments = [
+                (start_node, nodes[0]),
+                (nodes[0], nodes[1]),
+                (nodes[1], nodes[2]),
+                (nodes[2], nodes[3]),
+                (nodes[3], nodes[4]),
+                (nodes[4], nodes[5]),
+                (nodes[5], start_node)
+            ]
+            for u, v in segments:
+                path = nx.shortest_path(G, u, v, weight="length")
+                if route:
+                    route.extend(path[1:])
+                else:
+                    route.extend(path)
+            return route
+        except nx.exception.NetworkXNoPath:
+            continue
+    raise RuntimeError("Impossible de générer un parcours après plusieurs tentatives.")
 
 # Fonctions pour calculer les scores des parcours
 
@@ -260,9 +292,9 @@ def score_itineraire(
     node_score,
     distance_souhaitee,
     denivele_souhaite,
-    poids_noeud=0.5,
-    poids_distance=1,
-    poids_denivele=0.05,
+    poids_noeud=0.1,
+    poids_distance=5,
+    poids_denivele=1,
     nb_noeuds=5
 ):
 
@@ -310,18 +342,14 @@ def choix_meilleur_parcours(nb_parcours = 10, Distance_souhaitee = 80, Denivele_
         
     scores, deniveles = score_itineraire(routes, node_score, distance_souhaitee = Distance_souhaitee, denivele_souhaite = Denivele_souhaite)
 
-    best_index = scores.index(max(scores))
-    best_route = routes[best_index]
-    denivele = deniveles[best_index]
+    sorted_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    top_n = min(3, len(routes))
 
-    gpx = gpxpy.gpx.GPX()
-    gpx_track = gpxpy.gpx.GPXTrack()
-    gpx.tracks.append(gpx_track)
+    top_routes = [routes[i] for i in sorted_idx[:top_n]]
+    top_deniveles = [deniveles[i] for i in sorted_idx[:top_n]]
+    top_scores = [scores[i] for i in sorted_idx[:top_n]]
 
-    gpx_segment = gpxpy.gpx.GPXTrackSegment()
-    gpx_track.segments.append(gpx_segment)
-
-    return best_route, denivele
+    return top_routes, top_deniveles, top_scores
 
 def export_route_to_gpx(G, route, filename="route.gpx"):
 
@@ -345,6 +373,61 @@ def export_route_to_gpx(G, route, filename="route.gpx"):
     return gpx
 
 
+def route_to_gpx_bytes(G, route):
+    """Convertit un itinéraire en bytes GPX pour téléchargement sans fichier temporaire."""
+    gpx = gpxpy.gpx.GPX()
+    track = gpxpy.gpx.GPXTrack()
+    gpx.tracks.append(track)
+    segment = gpxpy.gpx.GPXTrackSegment()
+    track.segments.append(segment)
+
+    for node in route:
+        lat = G.nodes[node]["y"]
+        lon = G.nodes[node]["x"]
+        segment.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon))
+
+    return gpx.to_xml().encode("utf-8")
+
+
+def calcul_pente(df, step = 300):
+
+    df['dist_cum_m'] = df["dist_cum"] * 1000
+    df["Tranche"] = (df["dist_cum_m"] // step) * step
+    bins = (df["dist_cum_m"] // step) * step
+    g = df.groupby(bins)
+
+    result = g.agg(
+        dist_start=("dist_cum_m", "first"),
+        dist_end=("dist_cum_m", "last"),
+        elev_start=("elev", "first"),
+        elev_end=("elev", "last"),
+    )
+
+    result["delta_dist"] = result["dist_end"] - result["dist_start"]
+    result["delta_elev"] = result["elev_end"] - result["elev_start"]
+
+    result = result[result["delta_dist"] > 0]
+
+    result["pente_%"] = round((result["delta_elev"] / result["delta_dist"]) * 100, 2)
+
+    result.reset_index(drop=False, inplace=True)
+    result = result.rename(columns={"dist_cum_m": "Tranche"})
+
+    df = pd.merge(df, result[["Tranche", "pente_%"]], on="Tranche", how="left")
+    df.drop(columns=["dist_cum_m", "Tranche"], inplace=True)
+
+    df["couleur_pente"] = df["pente_%"].apply(lambda x: 'black' if x > 10 else (
+    'red' if (x > 8 and x <= 10) else (
+        'orange' if (x > 6 and x <= 8) else (
+            'yellow' if (x > 4 and x <= 6) else (
+                'green' if (x > 2 and x <= 4) else (
+                    'blue' if (x > 0 and x <= 2) else 'gray'
+                )
+            )
+        ))))
+
+    return df
+
 # Paramètres carte
 
 lat, lon = 43.4557049347904, 1.610179849942512
@@ -364,11 +447,19 @@ if "route" not in st.session_state:
     st.session_state.route = None
     st.session_state.denivele = None
 
+if "top_routes" not in st.session_state:
+    st.session_state.top_routes = []
+    st.session_state.top_deniveles = []
+    st.session_state.top_scores = []
+    st.session_state.selected_top_index = 0
+
 # Ressources dashboard
 
 df = pd.read_csv('D:/Documents/R/Vélo/Data_Strava/activities.csv')
 strava = load_data(df)
-strava = strava.sort_values(['annee','mois'], ascending=False)
+strava = strava.sort_values(['annee','mois','jour'], ascending=False)
+dataset_gpx = pickle.load(open("data/dataset_points.pkl", "rb"))
+dataset_points = pd.DataFrame(dataset_gpx)
 
 #FRONTEND
 
@@ -397,7 +488,7 @@ with onglet1:
         elevation = st.slider("Dénivelé (m)", 0, 3000, 50)
 
     with col4:
-        nb_parcours = st.slider("Nombre de parcours", 1, 50, 1)
+        nb_parcours = st.slider("Nombre de parcours", 3, 50, 1)
 
     generate = st.button("🚀 Générer l'itinéraire")
 
@@ -406,59 +497,95 @@ with onglet1:
     if generate:
         with st.spinner("Génération en cours..."):
             
-            route, denivele = choix_meilleur_parcours(
+            top_routes, top_deniveles, top_scores = choix_meilleur_parcours(
                 nb_parcours=nb_parcours,
                 Distance_souhaitee=distance,
                 Denivele_souhaite=elevation
             )
 
         # stockage pour persistance
-        st.session_state.route = route
-        st.session_state.denivele = denivele
+        st.session_state.top_routes = top_routes
+        st.session_state.top_deniveles = top_deniveles
+        st.session_state.top_scores = top_scores
+        st.session_state.selected_top_index = 0
 
     # Carte
 
     st.subheader("Carte")
 
+    if st.session_state.top_routes:
+        nb_top = len(st.session_state.top_routes)
+        options = [f"Top {i+1}" for i in range(nb_top)]
+        selected_label = st.radio(
+            "Sélectionnez un itinéraire (top 3)",
+            options,
+            index=st.session_state.selected_top_index,
+            horizontal=True
+        )
+        selected_idx = options.index(selected_label)
+        st.session_state.selected_top_index = selected_idx
+
+        route_selected = st.session_state.top_routes[selected_idx]
+        denivele_selected = st.session_state.top_deniveles[selected_idx]
+        score_selected = st.session_state.top_scores[selected_idx]
+    else:
+        route_selected = None
+        denivele_selected = None
+        score_selected = None
+
     col1, col2 = st.columns([2,1])
 
     m = folium.Map(location=Point_depart, zoom_start=12)
 
-    if st.session_state.route is not None:
-        coords_route = [
-            (G.nodes[n]["y"], G.nodes[n]["x"])
-            for n in st.session_state.route
-        ]
-
+    if route_selected is not None:
+        coords_route = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in route_selected]
         if coords_route:
             folium.PolyLine(coords_route, color="red", weight=4).add_to(m)
 
     with col1:
-        st_folium(m, width=600, height=600)
+        st_folium(m, width=800, height=800, returned_objects=[], key="m")
 
     with col2:
-      
-        if st.session_state.route is not None:
-            st.write("Informations sur l'itinéraire généré")
-            st.metric("Distance (km)", f"{route_distance(G, st.session_state.route):.2f}")
-            st.metric("Dénivelé (m)", f"{st.session_state.denivele:.0f}")   
+        if route_selected is not None:
+            st.write("Informations sur l'itinéraire sélectionné")
+            st.metric("Distance (km)", f"{route_distance(G, route_selected):.2f}")
+            st.metric("Dénivelé (m)", f"{denivele_selected:.0f}")
 
-        # Vitesse prédite
-        if st.session_state.route is not None:
+            gpx_bytes = route_to_gpx_bytes(G, route_selected)
+            st.download_button(
+                label="📥 Télécharger le GPX (itinéraire sélectionné)",
+                data=gpx_bytes,
+                file_name=f"parcours_cycliste_top{selected_idx+1}.gpx",
+                mime="application/gpx+xml"
+            )
 
-            route = st.session_state.route
-            denivele = st.session_state.denivele
-
-            Distance_m = route_distance(G, route)*1000
-
-            elevation_km = denivele / (Distance_m / 1000)
+            Distance_m = route_distance(G, route_selected) * 1000
+            elevation_km = denivele_selected / (Distance_m / 1000) if Distance_m > 0 else 0
             elevation_km_2 = elevation_km**2
 
             Predicted_speed = model.predict([
                 [Distance_m, avec, elevation_km, elevation_km_2]
             ])
-
             st.metric("Vitesse prédite (km/h)", f"{Predicted_speed[0]:.1f}")
+
+        if st.session_state.top_routes:
+            st.markdown("---")
+            st.subheader("Top 3 itinéraires retenus")
+            for idx, route in enumerate(st.session_state.top_routes):
+                with st.expander(f"Itinéraire n°{idx+1}"):
+                    dist = route_distance(G, route)
+                    deniv = st.session_state.top_deniveles[idx]
+                    st.metric("Distance (km)", f"{dist:.2f}")
+                    st.metric("Dénivelé (m)", f"{deniv:.0f}")
+
+                    gpx_bytes_i = route_to_gpx_bytes(G, route)
+                    st.download_button(
+                        label=f"📥 Télécharger GPX n°{idx+1}",
+                        data=gpx_bytes_i,
+                        file_name=f"parcours_cycliste_top{idx+1}.gpx",
+                        mime="application/gpx+xml",
+                        key=f"download_top_{idx}"
+                    )
 
 with onglet2:
     st.header("Statistiques générales")
@@ -467,13 +594,73 @@ with onglet2:
 with onglet3:
     st.header("Détail du parcours")
 
-parcours_a_afficher = st.selectbox(
-    "Parcours à afficher",
-    strava["Activity ID"],
-    format_func=lambda x: (
-        f"{strava.loc[strava['Activity ID'] == x, 'Activity Name'].values[0]} | "
-        f"{strava.loc[strava['Activity ID'] == x, 'Activity Date'].values[0]} | "
-        f"{strava.loc[strava['Activity ID'] == x, 'Distance'].values[0]} km | "
-        f"{strava.loc[strava['Activity ID'] == x, 'Elevation Gain'].values[0]} m"
+    tri_par = st.radio(
+        "Trier les parcours par",
+        ["📆 Date (décroissant)", "🛣️ Distance (décroissant)", "⛰️ Dénivelé (décroissant)"],
+        index=0
     )
-)
+
+    if tri_par == "📆 Date (décroissant)":
+        strava_triee = strava.sort_values(['annee','mois','jour'], ascending=False)
+    elif tri_par == "🛣️ Distance (décroissant)":
+        strava_triee = strava.sort_values('Distance_m', ascending=False)
+    elif tri_par == "⛰️ Dénivelé (décroissant)":
+        strava_triee = strava.sort_values('Elevation Gain', ascending=False)
+
+    parcours_a_afficher = st.selectbox(
+        "Parcours à afficher",
+        strava_triee["Activity ID"],
+        format_func=lambda x: (
+            f"{strava.loc[strava['Activity ID'] == x, 'Activity Name'].values[0]} | "
+            f"{strava.loc[strava['Activity ID'] == x, 'Activity Date'].values[0]} | "
+            f"{strava.loc[strava['Activity ID'] == x, 'Distance'].values[0]} km | "
+            f"{strava.loc[strava['Activity ID'] == x, 'Elevation Gain'].values[0]} m"
+        )
+    )
+
+    m_parcours = folium.Map(location=[lat, lon], zoom_start=200)
+
+    if parcours_a_afficher is not None:
+        df_parcours = get_dist_cum_elev(dataset_points, strava[strava["Activity ID"] == parcours_a_afficher]['Filename'].iloc[0].split('activities/')[1])
+        df_parcours = calcul_pente(df_parcours)
+        m_parcours = carte_folium_parcours(df_parcours)
+
+
+    col1, col2, col3 = st.columns([1, 5, 1])
+
+    with col2:
+        st_folium(m_parcours, width=1280, height=720, returned_objects=[], key="m_parcours")
+
+    fig_profile = go.Figure()
+
+    for _, group in df_parcours.groupby(
+        (df_parcours["couleur_pente"] != df_parcours["couleur_pente"].shift()).cumsum()
+    ):
+        color = group["couleur_pente"].iloc[0]
+        fillcolor = color.replace(")", ",0.2)").replace("rgb", "rgba") if "rgb" in color else color
+        fig_profile.add_trace(go.Scatter(
+            x=group["dist_cum"],
+            y=group["elev"],
+            mode="lines",
+            line=dict(color=color, width=2),
+            fill="tozeroy",
+            fillcolor=fillcolor,
+            showlegend=False
+        ))
+
+    fig_profile.update_layout(
+        title=f"Profil du parcours: {strava[strava['Activity ID'] == parcours_a_afficher]['Activity Name'].iloc[-1]}",
+        xaxis_title="Distance (km)",
+        yaxis_title="Altitude (m)"
+    )
+
+    with col3:
+        st.write("Informations sur le parcours sélectionné")
+        st.metric("Distance (km)", f"{strava[strava['Activity ID'] == parcours_a_afficher]['Distance'].iloc[-1]}")
+        st.metric("Dénivelé (m)", f"{strava[strava['Activity ID'] == parcours_a_afficher]['Elevation Gain'].iloc[-1]}")
+        st.metric("Vitesse moyenne (km/h)", f"{strava[strava['Activity ID'] == parcours_a_afficher]['Vitesse_moyenne'].iloc[-1]}")
+
+    col1, col2, col3 = st.columns([1, 5, 1])
+
+    with col2:
+        st.plotly_chart(fig_profile, use_container_width=True)
