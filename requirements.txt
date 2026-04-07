@@ -12,3 +12,4 @@ plotly
 geopy
 tqdm
 fitparse
+scikit-learn
