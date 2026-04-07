@@ -15,6 +15,12 @@ import pickle
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+from geopy.distance import geodesic
+from pathlib import Path
+from tqdm import tqdm
+import gzip
+import tempfile
+from fitparse import FitFile
 
 st.set_page_config(page_title="Générateur d'itinéraire cycliste", layout="wide")
 
@@ -368,6 +374,8 @@ def choix_meilleur_parcours(nb_parcours = 10, Distance_souhaitee = 80, Denivele_
 
     return top_routes, top_deniveles, top_scores
 
+# Fonctions dashboard + exports GPX
+
 def export_route_to_gpx(G, route, filename="route.gpx"):
 
     gpx = gpxpy.gpx.GPX()
@@ -468,6 +476,153 @@ def get_profile_from_route(G, route):
     df["elev"] = elevations
 
     return df
+
+# Fonctions chargement nouveau dataset
+
+def parse_gpx(file_path):
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        gpx = gpxpy.parse(f)
+
+    points = []
+    elevations = []
+
+    for track in gpx.tracks:
+        for segment in track.segments:
+            for p in segment.points:
+                points.append((p.latitude, p.longitude))
+                if p.elevation is not None:
+                    elevations.append(p.elevation)
+
+    # Calcul distance
+    distance = sum(geodesic(points[i], points[i+1]).km for i in range(len(points)-1)) if len(points) > 1 else 0.0
+    # Calcul D+
+    dplus = sum(max(elevations[i+1]-elevations[i],0) for i in range(len(elevations)-1)) if len(elevations) > 1 else 0.0
+
+    return {
+        "points": points,
+        "elevations": elevations,
+        "distance_km": round(distance,2),
+        "denivele_m": round(dplus,1)
+    }
+
+
+def parse_gpx_gz(file_path):
+    with gzip.open(file_path, "rt", encoding="utf-8", errors="ignore") as f:
+        gpx = gpxpy.parse(f)
+
+    points = []
+    elevations = []
+
+    for track in gpx.tracks:
+        for segment in track.segments:
+            for p in segment.points:
+                points.append((p.latitude, p.longitude))
+                if p.elevation is not None:
+                    elevations.append(p.elevation)
+
+    distance = sum(geodesic(points[i], points[i+1]).km for i in range(len(points)-1)) if len(points) > 1 else 0.0
+    dplus = sum(max(elevations[i+1]-elevations[i],0) for i in range(len(elevations)-1)) if len(elevations) > 1 else 0.0
+
+    return {
+        "points": points,
+        "elevations": elevations,
+        "distance_km": round(distance,2),
+        "denivele_m": round(dplus,1)
+    }
+
+def parse_fit(file_path):
+    fitfile = FitFile(file_path)
+
+    points = []
+    elevations = []
+
+    for record in fitfile.get_messages("record"):
+        data = {d.name: d.value for d in record}
+
+        lat_raw = data.get("position_lat")
+        lon_raw = data.get("position_long")
+
+        # Ignorer les points sans GPS
+        if lat_raw is None or lon_raw is None:
+            continue
+
+        lat = lat_raw * (180 / 2**31)
+        lon = lon_raw * (180 / 2**31)
+        ele = data.get("enhanced_altitude")  # altitude si disponible
+
+        points.append((lat, lon))
+        if ele is not None:
+            elevations.append(ele)
+
+    distance = sum(geodesic(points[i], points[i+1]).km for i in range(len(points)-1)) if len(points) > 1 else 0.0
+    dplus = sum(max(elevations[i+1]-elevations[i],0) for i in range(len(elevations)-1)) if len(elevations) > 1 else 0.0
+
+    return {
+        "points": points,
+        "elevations": elevations,
+        "distance_km": round(distance, 2),
+        "denivele_m": round(dplus, 1)
+    }
+
+
+def parse_fit_gz(file_path):
+    # Décompression d'un .fit.gz vers un fichier temporaire
+    with gzip.open(file_path, "rb") as f:
+        raw_data = f.read()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".fit") as tmp:
+        tmp.write(raw_data)
+        tmp_path = tmp.name
+
+    try:
+        return parse_fit(tmp_path)
+    finally:
+        os.remove(tmp_path)
+
+def parse_file(file_path):
+    name = file_path.name.lower()
+    if name.endswith(".gpx"):
+        return parse_gpx(file_path)
+    elif name.endswith(".gpx.gz"):
+        return parse_gpx_gz(file_path)
+    elif name.endswith(".fit.gz"):
+        return parse_fit_gz(file_path)
+    elif name.endswith(".fit"):
+        return parse_fit(file_path)
+    else:
+        raise ValueError(f"Format non supporté : {file_path}")        
+
+
+def build_dataset_points(data_dir=Path("Data/GPX"), output_path=Path("Data/dataset_points.pkl")):
+    dataset = {}
+
+    for file in sorted(data_dir.iterdir()):
+        if not file.is_file():
+            continue
+        try:
+            data = parse_file(file)
+            if len(data["points"]) < 2:
+                continue
+            dataset[file.name] = data
+        except Exception as e:
+            print(f"❌ Erreur sur {file.name}: {e}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb") as f:
+        pickle.dump(dataset, f)
+
+    return dataset
+
+
+def save_uploaded_files(uploaded_files, data_dir=Path("Data/GPX")):
+    data_dir.mkdir(parents=True, exist_ok=True)
+    saved_files = []
+    for uploaded_file in uploaded_files:
+        target_path = data_dir / uploaded_file.name
+        with open(target_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        saved_files.append(target_path)
+    return saved_files
 
 # Paramètres carte
 
@@ -811,7 +966,39 @@ with onglet4:
             st.error(f"Erreur lors du chargement : {e}")
 
     st.markdown("---")
+    st.subheader("Charger tous les fichiers GPX/FIT d'un dossier")
+    uploaded_route_files = st.file_uploader(
+        "Sélectionnez tous les fichiers du dossier",
+        type=["gpx", "gpx.gz", "fit", "fit.gz"],
+        accept_multiple_files=True
+    )
+
+    if uploaded_route_files:
+        try:
+            saved = save_uploaded_files(uploaded_route_files, Path("Data/GPX"))
+            st.info(f"{len(saved)} fichiers enregistrés dans Data/GPX.")
+            st.info("Reconstruction de dataset_points.pkl en cours...")
+            build_dataset_points(Path("Data/GPX"), Path("Data/dataset_points.pkl"))
+            st.success("dataset_points.pkl reconstruit avec succès ✅")
+            st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Erreur lors du traitement des fichiers : {e}")
+
+    st.markdown("---")
     st.write(f"Source actuelle : `{st.session_state.activities_path}`")
+
+    uploaded_gpx = st.file_uploader("Charger les fichiers gpx/fit", type=["gpx", "gpx.gz", "fit", "fit.gz"])
+
+    if uploaded_gpx is not None:
+        try:
+            parsed_data = parse_file(uploaded_gpx)
+            st.write("Fichier GPX/FIT analysé avec succès ✅")
+            st.write(f"Distance : {parsed_data['distance_km']} km")
+            st.write(f"Dénivelé : {parsed_data['denivele_m']} m")
+        except Exception as e:
+            st.error(f"Erreur lors de l'analyse du fichier GPX/FIT : {e}")
+        
+    
 
     with st.form("load_start_point"):
         start_point_input = st.text_input(
