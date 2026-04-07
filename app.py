@@ -96,14 +96,6 @@ def load_data(df):
         }
     )
 
-    df["Filename"] = (
-        df["Filename"]
-        .astype(str)
-        .str.replace("activities/", "", regex=False)
-        .str.split("/")
-        .str[-1]
-    )
-
     return df
 
 def get_dist_cum_elev(df, id_parcours):
@@ -736,8 +728,7 @@ with onglet3:
     m_parcours = folium.Map(location=[lat, lon], zoom_start=200)
 
     if parcours_a_afficher is not None:
-        filename = strava.loc[strava["Activity ID"] == parcours_a_afficher, 'Filename'].iloc[0]
-        df_parcours = get_dist_cum_elev(dataset_points, filename)
+        df_parcours = get_dist_cum_elev(dataset_points, strava[strava["Activity ID"] == parcours_a_afficher]['Filename'].iloc[0].split('activities/')[1])
         df_parcours = calcul_pente(df_parcours)
         m_parcours = carte_folium_parcours(df_parcours)
 
