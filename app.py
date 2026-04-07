@@ -805,7 +805,6 @@ with onglet4:
             st.session_state.load_error = ""
 
             st.success("Fichier chargé avec succès ✅")
-            st.rerun()
 
         except Exception as e:
             st.session_state.load_error = str(e)
