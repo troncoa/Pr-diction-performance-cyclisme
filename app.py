@@ -332,7 +332,10 @@ def score_itineraire(
 
     return liste_score, liste_denivele
 
-def choix_meilleur_parcours(nb_parcours = 10, Distance_souhaitee = 80, Denivele_souhaite = 1000): 
+def choix_meilleur_parcours(nb_parcours = 10, Distance_souhaitee = 80, Denivele_souhaite = 1000, Point_depart = None): 
+
+    if Point_depart is None:
+        Point_depart = st.session_state.get("Point_depart", Point_depart)
 
     routes = []
 
@@ -481,7 +484,10 @@ if "top_routes" not in st.session_state:
     st.session_state.selected_top_index = 0
 
 if "activities_path" not in st.session_state:
-    st.session_state.activities_path = 'D:/Documents/R/Vélo/Data_Strava/activities.csv'
+    st.session_state.activities_path = 'Data/activities.csv'
+
+if "Point_depart" not in st.session_state:
+    st.session_state.Point_depart = Point_depart
 
 if "strava" not in st.session_state:
     try:
@@ -533,13 +539,16 @@ with onglet1:
 
     # Generation intinéraire
 
+    Point_depart = st.session_state.Point_depart
+
     if generate:
         with st.spinner("Génération en cours..."):
             
             top_routes, top_deniveles, top_scores = choix_meilleur_parcours(
                 nb_parcours=nb_parcours,
                 Distance_souhaitee=distance,
-                Denivele_souhaite=elevation
+                Denivele_souhaite=elevation,
+                Point_depart=Point_depart
             )
 
         # stockage pour persistance
@@ -788,6 +797,26 @@ with onglet4:
 
     st.markdown("---")
     st.write(f"Chemin actuel : `{st.session_state.activities_path}`")
+
+    with st.form("load_start_point"):
+        start_point_input = st.text_input(
+            "Nouveau point de départ (lat, lon)",
+            value=f"{st.session_state.Point_depart[0]}, {st.session_state.Point_depart[1]}",
+            placeholder="43.52448896013804, 1.4964669559174226"
+        )
+        set_start_point = st.form_submit_button("Mettre à jour le point de départ")
+
+    if set_start_point:
+        try:
+            lat_str, lon_str = [s.strip() for s in start_point_input.split(",", 1)]
+            lat_val = float(lat_str)
+            lon_val = float(lon_str)
+            st.session_state.Point_depart = (lat_val, lon_val)
+            st.success(f"Point de départ mis à jour : {lat_val}, {lon_val}")
+        except Exception as e:
+            st.error("Format invalide. Utilisez `lat, lon` avec des valeurs numériques.")
+
+    st.write(f"Point de départ actuel : `{st.session_state.Point_depart[0]}, {st.session_state.Point_depart[1]}`")
     if st.session_state.load_error:
         st.error(f"Dernière erreur de chargement : {st.session_state.load_error}")
     elif not st.session_state.strava.empty:
