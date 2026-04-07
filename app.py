@@ -677,6 +677,9 @@ with onglet1:
 
 with onglet2:
     st.header("Statistiques")
+    strava = st.session_state.strava
+    if not strava.empty:
+        strava = strava.sort_values(['annee','mois','jour'], ascending=False)
     ongleta, ongletb, ongletc = st.tabs(["Statistiques générales", "", ""])
     with ongleta:
 
@@ -711,6 +714,9 @@ with onglet2:
 
 with onglet3:
     st.header("Détail du parcours")
+    strava = st.session_state.strava
+    if not strava.empty:
+        strava = strava.sort_values(['annee','mois','jour'], ascending=False)
 
     tri_par = st.radio(
         "Trier les parcours par",
@@ -786,7 +792,7 @@ with onglet3:
 
 with onglet4:
     st.header("Importer un fichier activities.csv")
-    st.write("Chargez directement votre fichier `activities.csv` pour recharger le jeu de données Strava.")
+    st.write("Chargez directement votre fichier `activities.csv` pour recharger le jeu de données Strava. L'application se rafraîchira automatiquement après le chargement.")
 
     uploaded_file = st.file_uploader("Charger le fichier", type=["csv"])
 
@@ -799,6 +805,7 @@ with onglet4:
             st.session_state.load_error = ""
 
             st.success("Fichier chargé avec succès ✅")
+            st.rerun()
 
         except Exception as e:
             st.session_state.load_error = str(e)
