@@ -497,7 +497,7 @@ if "strava" not in st.session_state:
 strava = st.session_state.strava
 if not strava.empty:
     strava = strava.sort_values(['annee','mois','jour'], ascending=False)
-dataset_gpx = pickle.load(open("data/dataset_points.pkl", "rb"))
+dataset_gpx = pickle.load(open("Data/dataset_points.pkl", "rb"))
 dataset_points = pd.DataFrame(dataset_gpx)
 
 #FRONTEND
