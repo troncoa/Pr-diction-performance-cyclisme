@@ -786,11 +786,14 @@ with onglet3:
 
 with onglet4:
     st.header("Importer un fichier activities.csv")
-    st.write("Entrez le chemin complet du fichier `activities.csv` pour recharger le jeu de données Strava.")
+    st.write("Entrez le chemin complet du fichier `activities.csv` ou importez-le directement.")
+
+    # 🔹 Upload (recommandé en déployé)
+    uploaded_file = st.file_uploader("Ou charger le fichier via upload", type=["csv"])
 
     with st.form("load_activities_csv"):
         activities_path = st.text_input(
-            "Chemin du fichier activities.csv",
+            "Chemin du fichier activities.csv (local uniquement)",
             value=st.session_state.activities_path,
             placeholder="C:/Users/.../activities.csv"
         )
@@ -798,14 +801,44 @@ with onglet4:
 
     if load_file:
         try:
-            df = pd.read_csv(activities_path)
+            import os
+
+            # 🔹 Nettoyage du chemin
+            clean_path = activities_path.strip().strip('"').strip("'")
+            clean_path = os.path.normpath(clean_path)
+
+            # 🔹 Vérifie si le fichier existe (cas local)
+            if os.path.exists(clean_path):
+                df = pd.read_csv(clean_path)
+                source = clean_path
+
+            # 🔹 Sinon, on force l'utilisation de l'upload
+            else:
+                st.error("Fichier introuvable sur le serveur. Utilisez l'upload ci-dessus.")
+                st.stop()
+
+            # 🔹 Chargement
             st.session_state.strava = load_data(df)
-            st.session_state.activities_path = activities_path
+            st.session_state.activities_path = clean_path
             st.session_state.load_error = ""
-            st.success(f"Fichier chargé avec succès : {activities_path}")
+            st.success(f"Fichier chargé avec succès : {source}")
+
         except Exception as e:
             st.session_state.load_error = str(e)
             st.error(f"Impossible de charger le fichier : {e}")
+
+    # 🔹 Si upload utilisé
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file)
+            st.session_state.strava = load_data(df)
+            st.session_state.activities_path = "upload"
+            st.session_state.load_error = ""
+            st.success("Fichier chargé avec succès via upload")
+
+        except Exception as e:
+            st.session_state.load_error = str(e)
+            st.error(f"Erreur upload : {e}")
 
     st.markdown("---")
     st.write(f"Chemin actuel : `{st.session_state.activities_path}`")
