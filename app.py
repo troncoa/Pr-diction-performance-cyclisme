@@ -70,6 +70,9 @@ def load_data(df):
     df = df[colonnes_a_garder]
     df['Vitesse_moyenne'] = round((df.Distance_m / (df['Moving Time'] / 3600))/1000,1)
 
+    df["Distance"] = df["Distance"].str.replace(",", "").astype(float)
+    df.loc[df['Activity Type'] == 'Swim', 'Distance'] = (df.loc[df['Activity Type'] == 'Swim', 'Distance'] / 1000)
+
     patterns = {
         'pere': r'père|pere',
         'nausicaa': r'nausicaa|naunau|copine',
@@ -292,8 +295,8 @@ def score_itineraire(
     node_score,
     distance_souhaitee,
     denivele_souhaite,
-    poids_noeud=0.1,
-    poids_distance=5,
+    poids_noeud=0.5,
+    poids_distance=3,
     poids_denivele=1,
     nb_noeuds=5
 ):
@@ -428,6 +431,30 @@ def calcul_pente(df, step = 300):
 
     return df
 
+def get_profile_from_route(G, route):
+    coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in route]
+
+    R = 6371
+
+    df = pd.DataFrame(coords, columns=["lat", "lon"])
+
+    lat = np.radians(df["lat"])
+    lon = np.radians(df["lon"])
+
+    dlat = lat.diff()
+    dlon = lon.diff()
+
+    a = np.sin(dlat/2)**2 + np.cos(lat)*np.cos(lat.shift())*np.sin(dlon/2)**2
+    df["dist"] = 2 * R * np.arcsin(np.sqrt(a))
+
+    df["dist"] = df["dist"].fillna(0)
+    df["dist_cum"] = df["dist"].cumsum()
+
+    elevations = get_elevations_opentopo(coords)
+    df["elev"] = elevations
+
+    return df
+
 # Paramètres carte
 
 lat, lon = 43.4557049347904, 1.610179849942512
@@ -453,11 +480,23 @@ if "top_routes" not in st.session_state:
     st.session_state.top_scores = []
     st.session_state.selected_top_index = 0
 
+if "activities_path" not in st.session_state:
+    st.session_state.activities_path = 'D:/Documents/R/Vélo/Data_Strava/activities.csv'
+
+if "strava" not in st.session_state:
+    try:
+        df = pd.read_csv(st.session_state.activities_path)
+        st.session_state.strava = load_data(df)
+        st.session_state.load_error = ""
+    except Exception as e:
+        st.session_state.strava = pd.DataFrame()
+        st.session_state.load_error = str(e)
+
 # Ressources dashboard
 
-df = pd.read_csv('D:/Documents/R/Vélo/Data_Strava/activities.csv')
-strava = load_data(df)
-strava = strava.sort_values(['annee','mois','jour'], ascending=False)
+strava = st.session_state.strava
+if not strava.empty:
+    strava = strava.sort_values(['annee','mois','jour'], ascending=False)
 dataset_gpx = pickle.load(open("data/dataset_points.pkl", "rb"))
 dataset_points = pd.DataFrame(dataset_gpx)
 
@@ -465,8 +504,8 @@ dataset_points = pd.DataFrame(dataset_gpx)
 
 # Interface utilisateur
 
-onglets = ["Générateur d'itinéraire cycliste", 'Statistiques', 'Détail parcours']
-onglet1, onglet2, onglet3 = st.tabs(onglets)
+onglets = ["Générateur d'itinéraire cycliste", 'Statistiques', 'Détail parcours', 'Importer activities.csv']
+onglet1, onglet2, onglet3, onglet4 = st.tabs(onglets)
 
 with onglet1:
     st.header("Paramètres de génération du parcours")
@@ -568,27 +607,86 @@ with onglet1:
             ])
             st.metric("Vitesse prédite (km/h)", f"{Predicted_speed[0]:.1f}")
 
-        if st.session_state.top_routes:
-            st.markdown("---")
-            st.subheader("Top 3 itinéraires retenus")
-            for idx, route in enumerate(st.session_state.top_routes):
-                with st.expander(f"Itinéraire n°{idx+1}"):
-                    dist = route_distance(G, route)
-                    deniv = st.session_state.top_deniveles[idx]
-                    st.metric("Distance (km)", f"{dist:.2f}")
-                    st.metric("Dénivelé (m)", f"{deniv:.0f}")
+    if route_selected is not None:
+        st.subheader("Profil d'élévation")
+        df_profile = get_profile_from_route(G, route_selected)
+        df_profile = calcul_pente(df_profile)
+        fig_profile = go.Figure()
 
-                    gpx_bytes_i = route_to_gpx_bytes(G, route)
-                    st.download_button(
-                        label=f"📥 Télécharger GPX n°{idx+1}",
-                        data=gpx_bytes_i,
-                        file_name=f"parcours_cycliste_top{idx+1}.gpx",
-                        mime="application/gpx+xml",
-                        key=f"download_top_{idx}"
-                    )
+        for _, group in df_profile.groupby(
+            (df_profile["couleur_pente"] != df_profile["couleur_pente"].shift()).cumsum()
+        ):
+            color = group["couleur_pente"].iloc[0]
+            fillcolor = color.replace(")", ",0.2)").replace("rgb", "rgba") if "rgb" in color else color
+            fig_profile.add_trace(go.Scatter(
+                x=group["dist_cum"],
+                y=group["elev"],
+                mode="lines",
+                line=dict(color=color, width=2),
+                fill="tozeroy",
+                fillcolor=fillcolor,
+                showlegend=False
+            ))
+
+        fig_profile.update_layout(
+            title="Profil d'élévation du parcours généré",
+            xaxis_title="Distance (km)",
+            yaxis_title="Altitude (m)"
+        )
+
+        st.plotly_chart(fig_profile, use_container_width=True)
+
+    if st.session_state.top_routes:
+        st.markdown("---")
+        st.subheader("Top 3 itinéraires retenus")
+        for idx, route in enumerate(st.session_state.top_routes):
+            with st.expander(f"Itinéraire n°{idx+1}"):
+                dist = route_distance(G, route)
+                deniv = st.session_state.top_deniveles[idx]
+                st.metric("Distance (km)", f"{dist:.2f}")
+                st.metric("Dénivelé (m)", f"{deniv:.0f}")
+
+                gpx_bytes_i = route_to_gpx_bytes(G, route)
+                st.download_button(
+                    label=f"📥 Télécharger GPX n°{idx+1}",
+                    data=gpx_bytes_i,
+                    file_name=f"parcours_cycliste_top{idx+1}.gpx",
+                    mime="application/gpx+xml",
+                    key=f"download_top_{idx}"
+                )
 
 with onglet2:
-    st.header("Statistiques générales")
+    st.header("Statistiques")
+    ongleta, ongletb, ongletc = st.tabs(["Statistiques générales", "", ""])
+    with ongleta:
+
+        strava["annee"] = strava["annee"].astype(str)
+
+        st.subheader("Statistiques générales")
+        annee_filtre = st.selectbox(
+            "Filtrer par année",np.append(["Tous les temps"], pd.unique(strava["annee"])), index=0)
+        if annee_filtre != "Tous les temps":
+            strava_filtre = strava[strava["annee"] == annee_filtre]
+        else:
+            strava_filtre = strava
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Nombre d'activités", strava_filtre.shape[0])
+        with col2:
+            st.metric("Distance totale (km)", strava_filtre["Distance"].sum().astype(int))
+        with col3:
+            st.metric("Dénivelé total (m)", strava_filtre["Elevation Gain"].sum().astype(int))
+        
+        st.subheader("Distance parcourue par mois")
+        fig_distance_mois = px.bar(
+            strava_filtre.groupby("mois")[["Distance","Elevation Gain"]].sum().reindex(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
+            labels={"value": "Total", "mois": "Mois"},
+            title="Distance et dénivelé totaux parcourus par mois",
+            barmode="group",
+        )
+        st.plotly_chart(fig_distance_mois, use_container_width=True)
+
 
 
 with onglet3:
@@ -664,3 +762,35 @@ with onglet3:
 
     with col2:
         st.plotly_chart(fig_profile, use_container_width=True)
+
+with onglet4:
+    st.header("Importer un fichier activities.csv")
+    st.write("Entrez le chemin complet du fichier `activities.csv` pour recharger le jeu de données Strava.")
+
+    with st.form("load_activities_csv"):
+        activities_path = st.text_input(
+            "Chemin du fichier activities.csv",
+            value=st.session_state.activities_path,
+            placeholder="C:/Users/.../activities.csv"
+        )
+        load_file = st.form_submit_button("Charger le fichier")
+
+    if load_file:
+        try:
+            df = pd.read_csv(activities_path)
+            st.session_state.strava = load_data(df)
+            st.session_state.activities_path = activities_path
+            st.session_state.load_error = ""
+            st.success(f"Fichier chargé avec succès : {activities_path}")
+        except Exception as e:
+            st.session_state.load_error = str(e)
+            st.error(f"Impossible de charger le fichier : {e}")
+
+    st.markdown("---")
+    st.write(f"Chemin actuel : `{st.session_state.activities_path}`")
+    if st.session_state.load_error:
+        st.error(f"Dernière erreur de chargement : {st.session_state.load_error}")
+    elif not st.session_state.strava.empty:
+        st.success(f"Données chargées : {st.session_state.strava.shape[0]} activités")
+    else:
+        st.info("Aucune donnée chargée pour le moment.")
