@@ -980,7 +980,6 @@ with onglet4:
             st.info("Reconstruction de dataset_points.pkl en cours...")
             build_dataset_points(Path("Data/GPX"), Path("Data/dataset_points.pkl"))
             st.success("dataset_points.pkl reconstruit avec succès ✅")
-            st.experimental_rerun()
         except Exception as e:
             st.error(f"Erreur lors du traitement des fichiers : {e}")
 
