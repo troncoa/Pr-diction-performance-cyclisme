@@ -14,6 +14,7 @@ import numpy as np
 import pickle
 import plotly.express as px
 import plotly.graph_objects as go
+import os
 
 st.set_page_config(page_title="Générateur d'itinéraire cycliste", layout="wide")
 
@@ -99,6 +100,16 @@ def load_data(df):
     return df
 
 def get_dist_cum_elev(df, id_parcours):
+
+    id_parcours = os.path.basename(str(id_parcours)).strip()
+
+    if id_parcours not in df.columns:
+        available = [c for c in df.columns if isinstance(c, str) and os.path.basename(c) == c]
+        raise KeyError(
+            f"Trajet '{id_parcours}' introuvable dans dataset_points. "
+            f"Vérifiez que la colonne existe dans Data/dataset_points.pkl. "
+            f"Exemples de colonnes disponibles: {available[:20]}"
+        )
 
     R = 6371
 
@@ -728,7 +739,8 @@ with onglet3:
     m_parcours = folium.Map(location=[lat, lon], zoom_start=200)
 
     if parcours_a_afficher is not None:
-        df_parcours = get_dist_cum_elev(dataset_points, strava[strava["Activity ID"] == parcours_a_afficher]['Filename'].iloc[0].split('activities/')[1])
+        parcours_filename = strava.loc[strava["Activity ID"] == parcours_a_afficher, 'Filename'].iloc[0]
+        df_parcours = get_dist_cum_elev(dataset_points, os.path.basename(str(parcours_filename)))
         df_parcours = calcul_pente(df_parcours)
         m_parcours = carte_folium_parcours(df_parcours)
 
