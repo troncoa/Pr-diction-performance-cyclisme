@@ -75,9 +75,10 @@ def load_data(df):
     ]
 
     df = df[colonnes_a_garder]
-    df['Vitesse_moyenne'] = round((df.Distance_m / (df['Moving Time'] / 3600))/1000,1)
 
     df["Distance"] = df["Distance"].str.replace(",", "").astype(float)
+    df['Vitesse_moyenne'] = round((df.Distance_m / (df['Moving Time'] / 3600))/1000,1)
+
     df.loc[df['Activity Type'] == 'Swim', 'Distance'] = (df.loc[df['Activity Type'] == 'Swim', 'Distance'] / 1000)
 
     patterns = {
@@ -99,9 +100,25 @@ def load_data(df):
             'mois': df["Activity Date"].str.split(' ', expand=True)[0],
             'jour': df["Activity Date"].str.split(' ', expand=True)[1].str.replace(',', '').astype(int),
             'elevation_km': (df["Elevation Gain"] / df["Distance_m"]) * 1000,
-            'date': pd.to_datetime(df["Activity Date"], format='%b %d, %Y, %I:%M:%S %p')
+            'date': pd.to_datetime(df["Activity Date"], format='%b %d, %Y, %I:%M:%S %p'),
+            'col_equivalent_pct': (df['Elevation Gain']/(df['Distance_m']/2000))/10,
+            'elevation_gap': df['Elevation High'] - df['Elevation Low']
         }
     )
+
+    df['col_equivalent_pct'] = df['col_equivalent_pct'].fillna(0)
+    df['elevation_gap'] = df['elevation_gap'].fillna(0)
+
+    conditions = [  
+    df['Distance'] <= 25,
+    df['col_equivalent_pct'] <= 2,
+    (df['col_equivalent_pct'] > 2) & (df['elevation_gap'] <= 600),
+    (df['col_equivalent_pct'] > 2) & (df['elevation_gap'] > 600),
+    ]
+
+    choices = ['Prologue', 'Plaine', 'Vallon', 'Montagne']
+
+    df['Type_sortie'] = np.select(conditions, choices, default='')
 
     return df
 
@@ -613,7 +630,6 @@ def build_dataset_points(data_dir=Path("Data/GPX"), output_path=Path("Data/datas
 
     return dataset
 
-
 def save_uploaded_files(uploaded_files, data_dir=Path("Data/GPX")):
     data_dir.mkdir(parents=True, exist_ok=True)
     saved_files = []
@@ -623,6 +639,12 @@ def save_uploaded_files(uploaded_files, data_dir=Path("Data/GPX")):
             f.write(uploaded_file.getbuffer())
         saved_files.append(target_path)
     return saved_files
+
+# Fonctions dashboard
+
+def plotly_personnalise_scatter(df, xcol, ycol, title="", color_var=None):
+    fig = px.scatter(df, x=xcol, y=ycol, title=title, color=color_var)
+    return fig
 
 # Paramètres carte
 
@@ -835,18 +857,28 @@ with onglet2:
     strava = st.session_state.strava
     if not strava.empty:
         strava = strava.sort_values(['annee','mois','jour'], ascending=False)
-    ongleta, ongletb, ongletc = st.tabs(["Statistiques générales", "", ""])
+
+    strava["annee"] = strava["annee"].astype(str)
+
+    type_activite_filtre = st.selectbox(
+        "Filtrer par type d'activité",np.append(["Tous les types"], pd.unique(strava["Activity Type"])), index=0)
+    if type_activite_filtre != "Tous les types":
+        strava_filtre = strava[strava["Activity Type"] == type_activite_filtre]
+    else:
+        strava_filtre = strava
+
+    annee_filtre = st.selectbox(
+        "Filtrer par année",np.append(["Tous les temps"], pd.unique(strava_filtre["annee"])), index=0)
+    if annee_filtre != "Tous les temps":
+        strava_filtre = strava_filtre[strava_filtre["annee"] == annee_filtre]
+    else:
+        strava_filtre = strava_filtre
+
+    ongleta, ongletb, ongletc = st.tabs(["Statistiques générales", "Statistiques avancées", ""])
+
     with ongleta:
 
-        strava["annee"] = strava["annee"].astype(str)
-
         st.subheader("Statistiques générales")
-        annee_filtre = st.selectbox(
-            "Filtrer par année",np.append(["Tous les temps"], pd.unique(strava["annee"])), index=0)
-        if annee_filtre != "Tous les temps":
-            strava_filtre = strava[strava["annee"] == annee_filtre]
-        else:
-            strava_filtre = strava
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -855,7 +887,13 @@ with onglet2:
             st.metric("Distance totale (km)", strava_filtre["Distance"].sum().astype(int))
         with col3:
             st.metric("Dénivelé total (m)", strava_filtre["Elevation Gain"].sum().astype(int))
-        
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Plus longue activité", f"{strava_filtre['Distance'].max().astype(int)} km")
+        with col2:
+            st.metric("Plus gros dénivelé", f"{strava_filtre['Elevation Gain'].max().astype(int)} m")
+
         st.subheader("Distance parcourue par mois")
         fig_distance_mois = px.bar(
             strava_filtre.groupby("mois")[["Distance","Elevation Gain"]].sum().reindex(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
@@ -865,7 +903,35 @@ with onglet2:
         )
         st.plotly_chart(fig_distance_mois, use_container_width=True)
 
+        color_map = {
+            "Montagne": "#ff3b30",   # rouge flashy
+            "Vallon": "#ff9500",     # orange
+            "Plaine": "#34c759",     # vert
+            "Prologue": "#007aff"    # bleu
+        }
 
+        fig_type_parcours = px.pie(strava_filtre,names="Type_sortie",title="Répartition des types de parcours",color="Type_sortie",color_discrete_map=color_map,hole=0.5)
+        fig_type_parcours.update_traces(textposition="inside",
+                                        textinfo="percent+label",
+                                        textfont=dict(size=14,family="DejaVu Sans Bold",color="white"),
+                                        pull=[0.05 if v == "Montagne" else 0 for v in strava_filtre["Type_sortie"].unique()])
+
+        st.plotly_chart(fig_type_parcours, use_container_width=True)
+
+    with ongletb:
+        st.subheader("Statistiques avancées")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.radio("Choisir la variable en abscisse", ["Distance","Elevation Gain"], index=0, key="var_x")
+        with col2:
+            st.radio("Choisir la variable en ordonnée", ["Distance","Elevation Gain","Vitesse_moyenne","elevation_km"], index=0, key="var_y")
+        with col3:
+            st.radio("Colorer par", ["Type_sortie","avec","annee","Vitesse_moyenne","elevation_km"], index=0, key="var_color")
+
+        fig_scatter = plotly_personnalise_scatter(strava_filtre, xcol=st.session_state.var_x, ycol=st.session_state.var_y, color_var=st.session_state.var_color)
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        
 
 with onglet3:
     st.header("Détail du parcours")
@@ -873,31 +939,45 @@ with onglet3:
     if not strava.empty:
         strava = strava.sort_values(['annee','mois','jour'], ascending=False)
 
-    tri_par = st.radio(
-        "Trier les parcours par",
-        ["📆 Date (décroissant)", "🛣️ Distance (décroissant)", "⛰️ Dénivelé (décroissant)"],
-        index=0
-    )
+        types_disponibles = ["Tous"] + sorted(strava["Type_sortie"].dropna().unique().tolist())
 
-    if tri_par == "📆 Date (décroissant)":
-        strava_triee = strava.sort_values(['annee','mois','jour'], ascending=False)
-    elif tri_par == "🛣️ Distance (décroissant)":
-        strava_triee = strava.sort_values('Distance_m', ascending=False)
-    elif tri_par == "⛰️ Dénivelé (décroissant)":
-        strava_triee = strava.sort_values('Elevation Gain', ascending=False)
+        col1, col2 = st.columns([1, 2])
 
-    parcours_a_afficher = st.selectbox(
-        "Parcours à afficher",
-        strava_triee["Activity ID"],
-        format_func=lambda x: (
-            f"{strava.loc[strava['Activity ID'] == x, 'Activity Name'].values[0]} | "
-            f"{strava.loc[strava['Activity ID'] == x, 'Activity Date'].values[0]} | "
-            f"{strava.loc[strava['Activity ID'] == x, 'Distance'].values[0]} km | "
-            f"{strava.loc[strava['Activity ID'] == x, 'Elevation Gain'].values[0]} m"
+        with col1:
+            types_selectionnes = st.multiselect(
+                "Filtrer par type de sortie",
+                sorted(strava["Type_sortie"].dropna().unique().tolist())
+            )
+
+        if types_selectionnes:
+            strava = strava[strava["Type_sortie"].isin(types_selectionnes)]
+
+        with col2:
+            tri_par = st.radio(
+                "Trier les parcours par",
+                ["📆 Date (décroissant)", "🛣️ Distance (décroissant)", "⛰️ Dénivelé (décroissant)"],
+                index=0
+            )
+
+        if tri_par == "📆 Date (décroissant)":
+            strava_triee = strava.sort_values(['annee', 'mois', 'jour'], ascending=False, key=lambda col: col.map({"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,"May": 5, "Jun": 6, "Jul": 7, "Aug": 8,"Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}) if col.name == "mois" else col)
+        elif tri_par == "🛣️ Distance (décroissant)":    
+            strava_triee = strava.sort_values('Distance_m', ascending=False)
+        elif tri_par == "⛰️ Dénivelé (décroissant)":
+            strava_triee = strava.sort_values('Elevation Gain', ascending=False)
+
+        parcours_a_afficher = st.selectbox(
+            "Parcours à afficher",
+            strava_triee["Activity ID"],
+            format_func=lambda x: (
+                f"{strava.loc[strava['Activity ID'] == x, 'Activity Name'].values[0]} | "
+                f"{strava.loc[strava['Activity ID'] == x, 'Activity Date'].values[0]} | "
+                f"{strava.loc[strava['Activity ID'] == x, 'Distance'].values[0]} km | "
+                f"{strava.loc[strava['Activity ID'] == x, 'Elevation Gain'].values[0]} m"
+            )
         )
-    )
 
-    m_parcours = folium.Map(location=[lat, lon], zoom_start=200)
+        m_parcours = folium.Map(location=[lat, lon], zoom_start=200)
 
     if parcours_a_afficher is not None:
         parcours_filename = strava.loc[strava["Activity ID"] == parcours_a_afficher, 'Filename'].iloc[0]
@@ -985,20 +1065,7 @@ with onglet4:
 
     st.markdown("---")
     st.write(f"Source actuelle : `{st.session_state.activities_path}`")
-
-    uploaded_gpx = st.file_uploader("Charger les fichiers gpx/fit", type=["gpx", "gpx.gz", "fit", "fit.gz"])
-
-    if uploaded_gpx is not None:
-        try:
-            parsed_data = parse_file(uploaded_gpx)
-            st.write("Fichier GPX/FIT analysé avec succès ✅")
-            st.write(f"Distance : {parsed_data['distance_km']} km")
-            st.write(f"Dénivelé : {parsed_data['denivele_m']} m")
-        except Exception as e:
-            st.error(f"Erreur lors de l'analyse du fichier GPX/FIT : {e}")
-        
     
-
     with st.form("load_start_point"):
         start_point_input = st.text_input(
             "Nouveau point de départ (lat, lon)",
