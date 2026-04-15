@@ -977,6 +977,7 @@ with onglet3:
             )
         )
 
+
         m_parcours = folium.Map(location=[lat, lon], zoom_start=200)
 
     if parcours_a_afficher is not None:
